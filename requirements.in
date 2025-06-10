@@ -1,0 +1,4 @@
+# Common dependencies for production and development environments
+streamlit
+pillow
+requests

@@ -1,0 +1,8 @@
+# Development dependencies
+ipdb
+ipykernel
+mypy
+pip-tools
+ruff
+types-requests
+watchdog

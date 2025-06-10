@@ -1,40 +1,51 @@
+.PHONY: help
+help:
+	@echo "make setup        - creates the virtual env and install packages"
+	@echo "make lint         - run code analysis and style checks"
+	@echo "make requirements - install requirements"
+	@echo "make pip-compile  - compile requirements files"
+	@echo "make streamlit    - run local streamlit app"
 
-default: pytest
+PY_VERSION=3.12.9
+PROJECT=celebtwin-ui
 
-# default: pylint pytest
+.PHONY: setup
+setup:
+	pyenv local --unset
+	pyenv install --skip-existing $(PY_VERSION)
+	pyenv virtualenvs --bare | grep -e '^$(PROJECT)$$' \
+	|| pyenv virtualenv $(PY_VERSION) $(PROJECT)
+	pyenv local $(PROJECT)
+	$(MAKE) requirements
 
-# pylint:
-# 	find . -iname "*.py" -not -path "./tests/test_*" | xargs -n1 -I {}  pylint --output-format=colorized {}; true
+.PHONY: lint
+lint:
+	-ruff check celebtwin
+	-mypy celebtwin
 
-pytest:
-	echo "no tests"
-
-# ----------------------------------
-#         LOCAL SET UP
-# ----------------------------------
-
-install_requirements:
-	@pip install -r requirements.txt
-
-# ----------------------------------
-#         HEROKU COMMANDS
-# ----------------------------------
-
+.PHONY: streamlit
 streamlit:
-	-@streamlit run app.py
+	streamlit run app.py
 
+.PHONY: requirements
+requirements: pip-compile
+	pip install --quiet --upgrade pip
+	pip install --quiet -r requirements.txt
+	pip install --quiet -r requirements-dev.txt
 
-# ----------------------------------
-#    LOCAL INSTALL COMMANDS
-# ----------------------------------
-install:
-	@pip install . -U
+.PHONY: pip-compile
+pip-compile: requirements.txt requirements-dev.txt
+
+requirements.txt: requirements.in
+	pip-compile --quiet --strip-extras requirements.in
+
+requirements-dev.txt: requirements-dev.in
+	pip-compile --quiet --strip-extras --constraint=requirements.txt \
+	requirements-dev.in
 
 clean:
 	@rm -fr */__pycache__
-	@rm -fr __init__.py
 	@rm -fr build
 	@rm -fr dist
 	@rm -fr *.dist-info
 	@rm -fr *.egg-info
-	-@rm model.joblib
