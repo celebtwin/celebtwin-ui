@@ -3,6 +3,7 @@ from textwrap import dedent
 import requests
 import streamlit as st
 
+
 SERVICE_ROOT = "https://celebtwin-api-244684580447.europe-west4.run.app"
 API_URL = SERVICE_ROOT + "/predict-annoy/"
 # API_URL = "http://127.0.0.1:8000/predict-annoy/"
@@ -23,21 +24,9 @@ def predict(uploaded_file):
     uploaded_file.seek(0)
     files = {"file": (uploaded_file.name, uploaded_file, uploaded_file.type)}
     response = requests.post(API_URL, files=files)
-    if response.status_code == 200:
-        return response.json()
-    else:
+    if response.status_code != 200:
         raise HTTPError(response)
-
-
-def render_error(error):
-    """Render an error message in the Streamlit app."""
-    if isinstance(error, HTTPError):
-        st.error(
-            f"""Erreur serveur: code {error.status_code}
-
-            {error.message}""", icon="💥")
-    else:
-        st.exception(error, icon="💣")
+    return response.json()
 
 
 def make_image_url(response):
@@ -60,16 +49,24 @@ def main():
         👯‍♂️ Trouve ton jumeau célèbre
         </h1>"""), unsafe_allow_html=True)
 
+    def upload_callback():
+        st.session_state.pop("response", None)
+        st.session_state.pop("error", None)
+
     uploaded_file = st.file_uploader(
         "Upload une photo", label_visibility="collapsed",
-        type=["jpg", "jpeg", "png"],
-        on_change=lambda: st.session_state.pop("response", None))
+        type=["jpg", "jpeg", "png"], on_change=upload_callback)
     if uploaded_file is None:
         st.info("Upload une photo pour trouver ton jumeau célèbre", icon="👀")
         st.stop()
 
     response = st.session_state.get("response", None)
-    if response is None:
+    if "error" in st.session_state:
+        if isinstance(st.session_state["error"], HTTPError):
+            st.error(f"Erreur: {st.session_state['error']}", icon="❌")
+        else:
+            st.exception(st.session_state["error"])
+    elif response is None:
         st.info("Analyse en cours...", icon="🧠")
     elif response.get("error") == "NoFaceDetectedError":
         st.error("Aucun visage détecté dans la photo", icon="❓")
@@ -86,7 +83,9 @@ def main():
         center_html("📷 &nbsp; Ta photo")
         st.image(uploaded_file, use_container_width=True)
     with col2:
-        if response is None:
+        if "error" in st.session_state:
+            st.button("Réessayer", on_click=upload_callback)
+        elif response is None:
             center_html("Attends, je cherche ton jumeau célèbre...")
             st.markdown(dedent("""
                 <div style="text-align: center; padding-top: 3em">
@@ -97,12 +96,12 @@ def main():
             image_url = make_image_url(response)
             st.image(image_url, use_container_width=True)
 
-    if response is None:
+    if response is None and "error" not in st.session_state:
         try:
             response = predict(uploaded_file)
         except Exception as error:
-            render_error(error)
-            st.stop()
+            st.session_state["error"] = error
+            response = None
         st.session_state["response"] = response
         st.rerun()
 
