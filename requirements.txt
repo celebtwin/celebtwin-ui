@@ -50,9 +50,7 @@ packaging==24.2
 pandas==2.3.0
     # via streamlit
 pillow==11.2.1
-    # via
-    #   -r requirements.in
-    #   streamlit
+    # via streamlit
 protobuf==6.31.1
     # via streamlit
 pyarrow==20.0.0
