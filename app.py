@@ -72,7 +72,7 @@ def main():
     if response is None:
         st.info("Analyse en cours...", icon="🧠")
     elif response.get("error") == "NoFaceDetectedError":
-        st.error("Aucun visage détecté dans la photo", icon=":❓")
+        st.error("Aucun visage détecté dans la photo", icon="❓")
     elif "error" in response:
         st.error(f"Erreur: {response["message"]}", icon="❌")
     elif "class" in response:
