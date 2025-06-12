@@ -62,7 +62,7 @@ def main():
 
     response = st.session_state.get("response", None)
     if "error" in st.session_state:
-        if isinstance(st.session_state["error"], HTTPError):
+        if st.session_state.role not in ["admin", "super-admin"]:
             st.error(f"Erreur: {st.session_state['error']}", icon="❌")
         else:
             st.exception(st.session_state["error"])
