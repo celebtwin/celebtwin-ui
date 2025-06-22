@@ -1,4 +1,5 @@
 from textwrap import dedent
+from PIL import Image, ImageOps, ExifTags
 
 import requests
 import streamlit as st
@@ -56,6 +57,19 @@ def main():
     uploaded_file = st.file_uploader(
         "Upload une photo", label_visibility="collapsed",
         type=["jpg", "jpeg", "png"], on_change=upload_callback)
+
+    if uploaded_file is not None:
+        if uploaded_file.type == "image/jpeg":
+            image = Image.open(uploaded_file)
+            orientation_key = next(
+                k for k, v in ExifTags.TAGS.items() if v == 'Orientation')
+            orientation = image.getexif().get(orientation_key, 1)
+            if orientation > 1:
+                # Apply EXIF orientation automatically
+                image = ImageOps.exif_transpose(image)
+                # Replace uploaded_file value by jpeg compressed image
+                uploaded_file.seek(0)
+                image.save(uploaded_file, "jpeg")
 
     response = st.session_state.get("response", None)
     if uploaded_file is None:
