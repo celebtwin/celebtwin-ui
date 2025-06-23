@@ -29,18 +29,18 @@ streamlit:
 
 .PHONY: requirements
 requirements: pip-compile
-	pip install --quiet --upgrade pip
-	pip install --quiet -r requirements.txt
-	pip install --quiet -r requirements-dev.txt
+	pip install --quiet -r requirements.txt -r requirements-dev.txt
 
 .PHONY: pip-compile
 pip-compile: requirements.txt requirements-dev.txt
 
+PIP_COMPILE_FLAGS = --quiet --strip-extras --generate-hashes --allow-unsafe
+
 requirements.txt: requirements.in
-	pip-compile --quiet --strip-extras requirements.in
+	pip-compile $(PIP_COMPILE_FLAGS) requirements.in
 
 requirements-dev.txt: requirements-dev.in
-	pip-compile --quiet --strip-extras --constraint=requirements.txt \
+	pip-compile $(PIP_COMPILE_FLAGS) --constraint=requirements.txt \
 	requirements-dev.in
 
 clean:
