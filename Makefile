@@ -36,12 +36,11 @@ pip-compile: requirements.txt requirements-dev.txt
 
 PIP_COMPILE_FLAGS = --quiet --strip-extras --generate-hashes --allow-unsafe
 
-requirements.txt: requirements.in
-	pip-compile $(PIP_COMPILE_FLAGS) requirements.in
+requirements.txt: pyproject.toml
+	pip-compile $(PIP_COMPILE_FLAGS) $<
 
-requirements-dev.txt: requirements-dev.in
-	pip-compile $(PIP_COMPILE_FLAGS) --constraint=requirements.txt \
-	requirements-dev.in
+requirements-dev.txt: requirements-dev.in requirements.txt
+	pip-compile $(PIP_COMPILE_FLAGS) --constraint=requirements.txt $<
 
 clean:
 	@rm -fr */__pycache__
