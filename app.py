@@ -104,7 +104,7 @@ def main():
         st.session_state["ping_thread"] = ping_thread
         # Wait for a little bit, so the startup message does not blink if the
         # service is already started.
-        ping_thread.join(0.1)
+        ping_thread.join(0.5)
 
     if uploaded_file is None:
         st.info("Upload une photo pour trouver ton jumeau célèbre", icon="👀")
