@@ -102,17 +102,14 @@ def main():
         ping_thread = PingThread()
         ping_thread.start()
         st.session_state["ping_thread"] = ping_thread
-        # Wait for a little bit, so the startup message does not blink if the
-        # service is already started.
-        ping_thread.join(0.5)
 
-    if uploaded_file is None:
+    if ping_thread.is_alive():
+        st.info("Démarrage du service...", icon="🚀")
+    elif uploaded_file is None:
         st.info("Upload une photo pour trouver ton jumeau célèbre", icon="👀")
     if error:
         st.error(f"Erreur: {error}", icon="❌")
         # st.exception(st.session_state["error"])
-    if ping_thread.is_alive():
-        st.info("Démarrage du service...", icon="🚀")
     elif uploaded_file is None:
         pass
     elif response is None:
