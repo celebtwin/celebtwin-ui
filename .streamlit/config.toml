@@ -1,3 +1,4 @@
 [server]
+runOnSave = true
 enableStaticServing = true
 maxUploadSize = 3
