@@ -1,9 +1,0 @@
-# Development dependencies
-ipdb
-ipykernel
-mypy
-pip < 25.1  # https://github.com/jazzband/pip-tools/issues/2176
-pip-tools
-ruff
-types-requests
-watchdog
