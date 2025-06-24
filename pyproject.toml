@@ -2,6 +2,9 @@
 requires = ["setuptools"]
 build-backend = "setuptools.build_meta"
 
+[tool.setuptools]
+packages = ["celebtwin_ui"]
+
 [project]
 name = "celebtwin-ui"
 version = "0.1.0"

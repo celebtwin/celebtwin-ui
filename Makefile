@@ -21,8 +21,8 @@ setup:
 
 .PHONY: lint
 lint:
-	-ruff check celebtwin
-	-mypy celebtwin
+	-ruff check app.py celebtwin_ui
+	-mypy app.py celebtwin_ui
 
 .PHONY: streamlit
 streamlit:

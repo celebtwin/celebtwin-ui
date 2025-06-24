@@ -2,3 +2,6 @@
 runOnSave = true
 enableStaticServing = true
 maxUploadSize = 3
+
+[client]
+showSidebarNavigation = false
