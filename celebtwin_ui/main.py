@@ -1,11 +1,21 @@
+import functools
 import threading
+from pathlib import Path
+from tempfile import NamedTemporaryFile
 from textwrap import dedent
-from typing import Any, cast
+from typing import TYPE_CHECKING, NamedTuple
 
 import requests
 import streamlit as st
-from PIL import ExifTags, Image, ImageOps
-from streamlit.runtime.uploaded_file_manager import UploadedFile
+from PIL import Image, ImageOps
+
+if TYPE_CHECKING:
+    from tempfile import _TemporaryFileWrapper
+    from typing import Any, Callable, Self
+
+    from streamlit.delta_generator import DeltaGenerator
+    from streamlit.runtime.uploaded_file_manager import UploadedFile
+
 
 SERVICE_ROOT = "https://celebtwin-api-244684580447.europe-west4.run.app"
 # SERVICE_ROOT = "http://127.0.0.1:8000"
@@ -16,173 +26,276 @@ API_URL = SERVICE_ROOT + "/predict-annoy/"
 class HTTPError(Exception):
     """Custom exception for HTTP errors."""
 
-    def __init__(self, response):
+    def __init__(self, response: requests.Response) -> None:
         super().__init__(f"HTTP Error {response.status_code}: {response.text}")
-        self.status_code = response.status_code
-        self.message = response.text
+        self.status_code: int = response.status_code
+        self.message: str = response.text
 
 
-def predict(status: Any, model: str, uploaded_file: UploadedFile) \
-        -> tuple[dict | None, Exception | str | None]:
-    """Send the uploaded file to the API and return the prediction."""
-    # Streamlit apparently wants us to reset the file position ourselves.
-    uploaded_file.seek(0)
-    files = {"file": (uploaded_file.name, uploaded_file, uploaded_file.type)}
-    try:
-        response = requests.post(API_URL + model, files=files)
-    except Exception as error:
-        return report_error(status, error)
-    if response.status_code != 200:
-        return report_error(status, HTTPError(response))
-    st.session_state["response"] = response.json()
-    return response.json(), None
+class APIError(Exception):
+    """Custom exception for API errors."""
+
+    def __init__(self, response: dict[str, str]) -> None:
+        assert response['status'] == 'error'
+        super().__init__(f"{response['error']}: {response['message']}")
+        self.error = response['error']
+        self.message = response['message']
 
 
-response_and_error = tuple[dict, None] | tuple[None, Exception | str]
+class Result[Value, Error](NamedTuple):
+    value: Value
+    error: Error
+
+
+type ErrorResult = \
+    Result[None, Exception] | Result[None, HTTPError] | Result[None, APIError]
+type ValueResult[T] = Result[T, None]
+type ValueOrError[T] = ValueResult[T] | ErrorResult
+
+
+def session_state(key: str):
+    """Decorator to store the result of a function in the session state."""
+    def inner(func):
+        def wrapper(*args, **kwargs):
+            if key in st.session_state:
+                return st.session_state[key]
+            st.session_state[key] = result = func(*args, **kwargs)
+            return result
+
+        def clear():
+            state = st.session_state.pop(key, None)
+            if hasattr(state, "close"):
+                state.close()
+        wrapper.clear = clear
+
+        def done():
+            return key in st.session_state
+        wrapper.done = done
+        return functools.update_wrapper(wrapper, func)
+    return inner
+
+
+class Status:
+
+    def __init__(self) -> None:
+        self._status = st.empty()
+        command = st.session_state.get("status", lambda x: None)
+        command(self._status)
+
+    def _delegate(self, command: "Callable[[DeltaGenerator], Any]") -> None:
+        st.session_state["status"] = command
+        command(self._status)
+
+    def info(self, message: str, icon: str | None = None) -> None:
+        self._delegate(lambda x: x.info(message, icon=icon))
+
+    def success(self, message: str, icon: str | None = None) -> None:
+        self._delegate(lambda x: x.success(message, icon=icon))
+
+    def error(self, message: str, icon: str | None = None) -> None:
+        self._delegate(lambda x: x.error(message, icon=icon))
+
+    def exception(self, error: Exception) -> None:
+        self._delegate(lambda x: x.exception(error))
+
+
+def report_error(
+        status: Status, error: Exception | str, icon: str = "❌") -> None:
+    if isinstance(error, (HTTPError, APIError)):
+        status.error(str(error), icon=icon)
+    if isinstance(error, Exception):
+        status.exception(error)
+    else:
+        status.error(error, icon=icon)
+
 
 class PingThread(threading.Thread):
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
-        self.result, self.error = None, None
-        st.session_state["ping_thread"] = self
+        self._result: dict | None = None
+        self._error: Exception | None = None
+
+    @classmethod
+    @session_state("ping_thread")
+    def get(cls) -> "Self":
+        thread = cls()
+        thread.start()
+        return thread
 
     def run(self) -> None:
         try:
             response = requests.get(PING_URL)
         except Exception as error:
-            self.error = error
+            self._error = error
             return
         if response.status_code != 200:
-            self.error = HTTPError(response)
+            self._error = HTTPError(response)
             return
-        self.result = response.json()
+        self._result = response.json()
 
-    def get_result(self, status: Any) -> response_and_error:
+    @session_state("ping_result")
+    def get_result(self) -> ValueOrError[dict]:
         self.join()
-        if self.error:
-            return report_error(status, self.error)
-        st.session_state["ping_response"] = self.result
-        return self.result, None
+        if self._error:
+            return Result(None, self._error)
+        assert self._result
+        return Result(self._result, None)
 
 
-def report_error(status: Any, error: Exception | str, icon: str = "❌") \
-        -> tuple[None, Exception | str]:
-    st.session_state["error"] = error
-    status.error(f"Erreur: {error}", icon=icon)
-    return None, error
+class UploadedImage:
+
+    def __init__(self, uploaded_file: "UploadedFile") -> None:
+        self.uploaded_file = uploaded_file
+        self.suffix = Path(uploaded_file.name).suffix.lower()
+        assert self.suffix in [".jpg", ".jpeg", ".png"]
+        assert uploaded_file.type in ["image/jpeg", "image/png"]
+        self.file_type = uploaded_file.type.split("/")[1]
+        self._thumbnail_file: '_TemporaryFileWrapper[bytes]' | None = None
+
+    def close(self) -> None:
+        if self._thumbnail_file:
+            self._thumbnail_file.close()
+
+    @classmethod
+    @session_state("uploaded_image")
+    def get(cls, uploaded_file: "UploadedFile") -> "UploadedImage":
+        return cls(uploaded_file)
+
+    def fullres_image(self) -> Image.Image:
+        image = Image.open(self.uploaded_file)
+        if self.file_type == "jpeg":
+            ImageOps.exif_transpose(image, in_place=True)
+        return image
+
+    def thumbnail_file(self) -> '_TemporaryFileWrapper[bytes]':
+        if self._thumbnail_file is None:
+            self._thumbnail_file = NamedTemporaryFile(suffix=self.suffix)
+            image = self.fullres_image()
+            image.thumbnail((512, 512))
+            image.save(self._thumbnail_file)
+        return self._thumbnail_file
+
+    @session_state("predict_result")
+    def predict(self, model: str) -> ValueOrError['PredictResponse']:
+        """Send the uploaded file to the API and return the prediction."""
+        thumbnail = self.thumbnail_file()
+        thumbnail.seek(0)
+        try:
+            response = requests.post(
+                API_URL + model, files={"file": thumbnail})
+        except Exception as error:
+            return Result(None, error)
+        if response.status_code != 200:
+            return Result(None, HTTPError(response))
+        json = response.json()
+        if json["status"] != "ok":
+            return Result(None, APIError(json))
+        return Result(PredictResponse(json), None)
 
 
-def make_image_url(response):
-    image_root = "https://storage.googleapis.com/celebtwin/public/img/"
-    image_dir = response["class"].lower().replace(" ", "-").replace(".", "")
-    image_url = image_root + image_dir + "/" + response["name"]
-    return image_url
+class PredictResponse:
+
+    def __init__(self, json: dict) -> None:
+        self._json = json
+        self.celebrity = json["class"]
+
+    def image_url(self) -> str:
+        image_root = "https://storage.googleapis.com/celebtwin/public/img/"
+        image_dir = \
+            self._json["class"].lower().replace(" ", "-").replace(".", "")
+        image_url = image_root + image_dir + "/" + self._json["name"]
+        return image_url
 
 
-def center_html(html):
+def center_html(html: str) -> None:
     st.markdown(f"<p style='text-align: center;'>{html}</p>",
                 unsafe_allow_html=True)
 
 
-def main() -> None:
+class CelebtwinPage:
     """🎬 Interface principale"""
 
-    st.markdown(dedent("""
-        <h1 style="text-align: center">
-        👯‍♂️ Trouve ton jumeau célèbre
-        </h1>"""), unsafe_allow_html=True)
+    def upload_callback(self) -> None:
+        UploadedImage.get.clear()
+        UploadedImage.predict.clear()
 
-    def upload_callback():
-        st.session_state.pop("response", None)
-        st.session_state.pop("error", None)
+    def run(self) -> None:
+        st.markdown(dedent("""
+            <h1 style="text-align: center">
+            👯‍♂️ Trouve ton jumeau célèbre
+            </h1>"""), unsafe_allow_html=True)
 
-    uploaded_file = st.file_uploader(
-        "Upload une photo", label_visibility="collapsed",
-        type=["jpg", "jpeg", "png"], on_change=upload_callback)
+        uploaded_file = st.file_uploader(
+            "Upload une photo", label_visibility="collapsed",
+            key="uploaded_file",
+            type=["jpg", "jpeg", "png"], on_change=self.upload_callback)
 
-    status = st.empty()
-    ping_thread = st.session_state.get("ping_thread", None)
-    ping_response = st.session_state.get("ping_response", None)
-    response = st.session_state.get("response", None)
-    error = st.session_state.get("error", None)
+        status = Status()
 
-    if error:
-        status.error(error)
+        model_choices = {"facenet": "v1 – Facenet", "vggface": "v2 – VGG-Face"}
+        model = st.pills(
+            label="Modèle", label_visibility="collapsed", key="model",
+            options=list(model_choices.keys()), default="vggface",
+            format_func=lambda x: model_choices[x],
+            on_change=self.upload_callback)
 
-    model_choices = {"facenet": "v1 – Facenet", "vggface": "v2 – VGG-Face"}
-    model = st.pills(
-        label="Modèle", options=list(model_choices.keys()), default="vggface",
-        format_func=lambda x: model_choices[x], on_change=upload_callback,
-        label_visibility="collapsed")
-    assert model in model_choices
+        ping_thread = PingThread.get()
+        if ping_thread.is_alive():
+            status.info("Démarrage du service...", icon="🚀")
 
-    if ping_thread is None:
-        ping_thread = PingThread()
-        ping_thread.start()
+        if uploaded_file:
+            uploaded_image = UploadedImage.get(uploaded_file)
+            col1, col2 = st.columns(2)
+            with col1:
+                center_html("📷 &nbsp; Ta photo")
+                st.image(
+                    uploaded_image.thumbnail_file().name,
+                    use_container_width=True)
+            with col2:
+                right_column = st.empty()
 
-    if ping_response is None and error is None:
-        status.info("Démarrage du service...", icon="🚀")
+        _, ping_error = ping_thread.get_result()
+        if ping_error:
+            report_error(status, ping_error)
+        elif not uploaded_file:
+            status.info(
+                "Upload une photo pour trouver ton jumeau célèbre",
+                icon="👀")
+        if not uploaded_file:
+            return
+        if not model:
+            status.info("Choisis un modèle", icon="👉")
+            return
 
-    if uploaded_file and uploaded_file.type == "image/jpeg":
-        image = Image.open(uploaded_file)
-        orientation_key = next(
-            k for k, v in ExifTags.TAGS.items() if v == 'Orientation')
-        orientation = image.getexif().get(orientation_key, 1)
-        if orientation > 1:
-            # Apply EXIF orientation automatically
-            print("Applying EXIF orientation")
-            ImageOps.exif_transpose(image, in_place=True)
-            # Replace uploaded_file value by jpeg compressed image
-            uploaded_file.seek(0)
-            image.save(uploaded_file, "jpeg")
+        if not uploaded_image.predict.done():
+            status.info("Analyse en cours...", icon="🧠")
+            with right_column.container():
+                center_html("Attends, je cherche ton jumeau célèbre...")
+                st.markdown(dedent("""
+                    <div style="text-align: center; padding-top: 3em">
+                    <img src="app/static/spinner.gif">
+                    </div>"""), unsafe_allow_html=True)
+        response, error = uploaded_image.predict(model)
 
-    if uploaded_file:
-        col1, col2 = st.columns(2)
-        with col1:
-            center_html("📷 &nbsp; Ta photo")
-            st.image(uploaded_file, use_container_width=True)
-        with col2:
-            right_column = st.empty()
+        if isinstance(error, APIError):
+            if error.error == "NoFaceDetectedError":
+                status.error(
+                    "Aucun visage détecté dans la photo", icon="❓")
+                right_column.empty()
+                return
+        if error:
+            report_error(status, error)
+            right_column.button("Réessayer", on_click=self.upload_callback)
+            return
 
-    if ping_response is None and error is None:
-        ping_response, error = ping_thread.get_result(status)
-
-    if not uploaded_file:
-        status.info(
-            "Upload une photo pour trouver ton jumeau célèbre", icon="👀")
-        return
-
-    if response is None and error is None:
-        status.info("Analyse en cours...", icon="🧠")
+        status.success(
+            f"Ton jumeau célèbre est : **{response.celebrity}**",
+            icon="🎉")
         with right_column.container():
-            center_html("Attends, je cherche ton jumeau célèbre...")
-            st.markdown(dedent("""
-                <div style="text-align: center; padding-top: 3em">
-                <img src="app/static/spinner.gif">
-                </div>"""), unsafe_allow_html=True)
-        response, error = predict(status, model, uploaded_file)
+            center_html(f"🎬 &nbsp; {response.celebrity}")
+            st.image(response.image_url(), use_container_width=True)
 
-    if error:
-        right_column.button("Réessayer", on_click=upload_callback)
-        return
 
-    if response["status"] == "ok":
-        status.success(f"Ton jumeau célèbre est : **{response['class']}**",
-                       icon="🎉")
-        with right_column.container():
-            center_html(f"🎬 &nbsp; {response['class']}")
-            image_url = make_image_url(response)
-            st.image(image_url, use_container_width=True)
-        return
-
-    if response["status"] == "error":
-        right_column.empty()
-        if response["error"] == "NoFaceDetectedError":
-            report_error(
-                status, "Aucun visage détecté dans la photo", icon="❓")
-        else:
-            report_error(status, response["error"])
-        return
-
-    status.error("Une erreur est survenue", icon="💣")
+def main() -> None:
+    CelebtwinPage().run()
